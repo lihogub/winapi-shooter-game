@@ -3,7 +3,8 @@
 
 #include "framework.h"
 #include "ShooterGame.h"
-
+#include "MMSystem.h"
+#pragma comment(lib, "Winmm.lib")
 #define MAX_LOADSTRING 100
 
 // Global Variables:
@@ -158,7 +159,7 @@ mutex frameMutex;
 int dT = 40;
 
 
-int height = 400;
+int height = 800;
 int width = 800;
 
 class Plate;
@@ -236,9 +237,13 @@ public:
 
 vector<Projectile*> projectiles;
 mutex projectilesMutex;
-
+#define CD 1
 int score = 1000;
 int maxScore = 1000;
+
+
+double cd = CD;
+bool shouldBeep = false;
 
 class Shooter {
 public:
@@ -269,8 +274,12 @@ public:
     }
     void shoot() {
         projectilesMutex.lock();
-        Bullet* bul = new Bullet(gunX, gunY);
-        projectiles.push_back(bul);
+        if (cd == 0.0) {
+            Bullet* bul = new Bullet(gunX, gunY);
+            projectiles.push_back(bul);
+            cd = CD;
+            shouldBeep = true;
+        }
         projectilesMutex.unlock();
     }
 };
@@ -281,6 +290,16 @@ Shooter shooter(RADIUS);
 
 
 bool loose = false;
+
+void beeper() {
+    while (1) {
+        if (shouldBeep) {
+            PlaySound(L"pew.wav", NULL, SND_SYNC);
+            shouldBeep = false;
+        }
+        Sleep(10);
+    }
+}
 
 int checkHits() {
     int points = 0;
@@ -307,6 +326,8 @@ void clearField() {
     for (Projectile* proj : projectiles)
         if (!proj->shouldBeDeleted)
             newProjectiles.push_back(proj);
+        else
+            delete proj;
     projectiles = newProjectiles;
     projectilesMutex.unlock();
 }
@@ -326,8 +347,14 @@ void recalcMaxScore() {
     if (maxScore < score) maxScore = score;
 }
 
+bool paused = false;
+
+
 void THPlateSpawner() {
     while (1) {
+        if (paused) {
+            Sleep(25);
+        }
         if (rand() % 100 < 25) {
             spawnPlate();
         }
@@ -335,19 +362,25 @@ void THPlateSpawner() {
     }
 }
 
+
 void THfunction(HINSTANCE hInstance, WNDCLASS w, int nCmdShow)
 {
     HWND hwnd;
-    hwnd = CreateWindow(L"My Class", L"Shooter", WS_OVERLAPPEDWINDOW, 400, 400, width, height, NULL, NULL, hInstance, NULL);
+    hwnd = CreateWindow(L"My Class", L"Shooter", WS_OVERLAPPEDWINDOW, 200, 200, width, height, NULL, NULL, hInstance, NULL);
     ShowWindow(hwnd, nCmdShow);
 
     while (1) {
         score = 1000;
         maxScore = 1000;
+        
         while (score >= 0) {
-            score--;
             
+            if (GetAsyncKeyState(VK_DELETE) < 0) {
+                paused = !paused;
+                Sleep(100);
+            }
 
+            if (paused) continue;
             if (GetAsyncKeyState(VK_UP) < 0) {
                 shooter.moveTop();
             }
@@ -359,11 +392,12 @@ void THfunction(HINSTANCE hInstance, WNDCLASS w, int nCmdShow)
             }
 
             frameMutex.lock();
-            
+            score--;
             doSteps();
             clearField();
             score += checkHits();
             recalcMaxScore();
+            cd = max(cd - 2.0 * dT / 1000, 0.0);
             frameMutex.unlock();
 
             InvalidateRect(hwnd, 0, 1); //подготовка к перерисовке
@@ -431,6 +465,8 @@ void DrawScore(HDC hdc, RECT rectClient) {
     TextOut(hdc, width - 150, 20, text, wcslen(text));
     swprintf_s(text, 256, L"Max score: %d", maxScore);
     TextOut(hdc, width - 150, 5, text, wcslen(text));
+    swprintf_s(text, 256, L"Cooldown: %5.2f", cd);
+    TextOut(hdc, width - 150, 40, text, wcslen(text));
 }
 
 void DrawLoose(HDC hdc, RECT rectClient) {
@@ -460,13 +496,14 @@ int WINAPI WinMain(HINSTANCE hInstance,  //главный процесс
     srand(time(0));
     std::thread TH0(THfunction, hInstance, w, nCmdShow);
     std::thread TH1(THPlateSpawner);
+    std::thread TH2(beeper);
     TH1.detach();
+    TH2.detach();
     TH0.join();
 }
 
 
-LONG WINAPI WndProc(HWND hwnd, UINT Message,
-    WPARAM wparam, LPARAM lparam)
+LONG WINAPI WndProc(HWND hwnd, UINT Message, WPARAM wparam, LPARAM lparam)
 {
     HDC hdc;
     PAINTSTRUCT ps;
@@ -483,7 +520,6 @@ LONG WINAPI WndProc(HWND hwnd, UINT Message,
         else {
             DrawLoose(hdc, ps.rcPaint);
         }
-
         break;
     case WM_DESTROY:
         PostQuitMessage(0);
